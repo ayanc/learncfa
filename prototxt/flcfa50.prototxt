@@ -1,0 +1,357 @@
+# Prototxt for training reconstruction network with a fixed arbitrary pattern.
+# The CFA code included below is the one we learned using learncfa.prototxt    
+# Copyright (C) 2016, Ayan Chakrabarti <ayanc@ttic.edu>
+
+name: "FLCFA" 
+
+layer {
+  name: "light"
+  top: "light"
+  top: "patch_gt"
+  type: "Python" 
+  python_param {
+    module: "dcDataLayer"
+    layer: "DataRGBW" 
+    param_str: "train.txt:256:10:100:0.005"  
+  } 
+  include {
+    phase: TRAIN
+  } 
+} 
+
+layer {
+  name: "light"
+  top: "light"
+  top: "patch_gt"
+  type: "Python" 
+  python_param {
+    module: "dcDataLayer"
+    layer: "DataRGBW" 
+    param_str: "val.txt:1000:0:1:0.005"  # 1000 patches per image
+  } 
+  include {
+    phase: TEST
+  } 
+} 
+
+layer {
+  name: "sensor"
+  top: "sensor"
+  bottom: "light"
+  type: "Python" 
+  python_param {
+    module: "sensor"
+    layer: "FLCFA"
+    param_str: "3133033303333303132232330233131233333103303133100323133331333322"
+  } 
+} 
+
+###
+# Interpolation Path
+#
+# Go from log(sensor) to 8 x 8 x (3 . 24) (fully connected)
+# Exponentiate back to linear domain, and then have a 1x1 conv layer
+# with (3 . 24) outputs per location.
+# No non-linear activations on FC or conv layer.
+###
+
+layer {
+  name: "logS"
+  top: "logS"
+  type: "Log"
+  bottom: "sensor" 
+  log_param {
+    shift: 0.00000001
+  } 
+} 
+
+layer {
+  name: "int1"
+  top: "int1"
+  type: "InnerProduct"
+  bottom: "logS" 
+  inner_product_param { 
+    bias_term: false 
+    weight_filler {
+      type: "gaussian"
+      std: 0.001
+    } 
+    num_output: 4608 
+  } 
+} 
+
+layer {
+  name: "int2"
+  top: "int2"
+  type: "Exp"
+  bottom: "int1"
+} 
+
+layer {
+  name: "int2S"
+  top: "int2S"
+  type: "Reshape"
+  bottom: "int2" 
+  reshape_param {
+    shape {
+      dim: 0
+      dim: -1
+      dim: 8
+      dim: 8
+    }
+  } 
+} 
+
+layer {
+  name: "intOut"
+  top: "intOut"
+  type: "Convolution"
+  bottom: "int2S"
+  param {
+    lr_mult: 1
+  }
+  param {
+    lr_mult: 2
+  } 
+  convolution_param {
+    weight_filler {
+      type: "xavier"
+    }
+    bias_filler {
+      type: "constant"
+    } 
+    num_output: 72
+    kernel_size: 1 
+  } 
+} 
+
+###
+# Selector path
+# Have a convnet (multiple conv layers, with RELU) to go from linear sensor
+# values to 8 x 8 x (3 . 24) shaped output.
+# First conv layer has stride = 8
+###
+
+layer {
+  name: "conv1"
+  top: "conv1"
+  type: "Convolution"
+  bottom: "sensor"
+  param {
+    lr_mult: 1
+  }
+  param {
+    lr_mult: 2
+  } 
+  convolution_param {
+    weight_filler {
+      type: "xavier"
+    }
+    bias_filler {
+      type: "constant"
+    } 
+    num_output: 128
+    kernel_size: 8
+    stride: 8 
+  } 
+} 
+layer {
+  name: "RELUconv1"
+  type: "ReLU"
+  bottom: "conv1"
+  top: "conv1"
+} 
+
+layer {
+  name: "conv2"
+  top: "conv2"
+  type: "Convolution"
+  bottom: "conv1"
+  param {
+    lr_mult: 1
+  }
+  param {
+    lr_mult: 2
+  } 
+  convolution_param {
+    weight_filler {
+      type: "xavier"
+    }
+    bias_filler {
+      type: "constant"
+    } 
+    num_output: 128
+    kernel_size: 2 
+  } 
+} 
+layer {
+  name: "RELUconv2"
+  type: "ReLU"
+  bottom: "conv2"
+  top: "conv2"
+} 
+
+layer {
+  name: "conv3"
+  top: "conv3"
+  type: "Convolution"
+  bottom: "conv2"
+  param {
+    lr_mult: 1
+  }
+  param {
+    lr_mult: 2
+  } 
+  convolution_param {
+    weight_filler {
+      type: "xavier"
+    }
+    bias_filler {
+      type: "constant"
+    } 
+    num_output: 128
+    kernel_size: 2 
+  } 
+} 
+layer {
+  name: "RELUconv3"
+  type: "ReLU"
+  bottom: "conv3"
+  top: "conv3"
+} 
+
+layer {
+  name: "sOut0"
+  top: "sOut0"
+  type: "InnerProduct"
+  bottom: "conv3"
+  param {
+    lr_mult: 1
+  }
+  param {
+    lr_mult: 2
+  } 
+  inner_product_param {
+    weight_filler {
+      type: "xavier"
+    }
+    bias_filler {
+      type: "constant"
+    } 
+    num_output: 4608 
+  } 
+} 
+layer {
+  name: "RELUsOut0"
+  type: "ReLU"
+  bottom: "sOut0"
+  top: "sOut0"
+} 
+
+layer {
+  name: "sOut"
+  top: "sOut"
+  type: "Reshape"
+  bottom: "sOut0" 
+  reshape_param {
+    shape {
+      dim: 0
+      dim: -1
+      dim: 8
+      dim: 8
+    }
+  } 
+} 
+
+###
+# Combine
+# Compute dot product of outputs of interpolation and selection paths, treating
+# them as 24 long vectors for each 8 x 8 x 3 intensity.
+###
+
+layer {
+  name: "dotA"
+  top: "dotA"
+  type: "Eltwise" 
+  bottom: "sOut"
+  bottom: "intOut" 
+  eltwise_param {
+    operation: PROD
+  } 
+} 
+
+layer {
+  name: "dotB"
+  type: "Slice"
+  bottom: "dotA" 
+  top: "dotB01"
+  top: "dotB02"
+  top: "dotB03"
+  top: "dotB04"
+  top: "dotB05"
+  top: "dotB06"
+  top: "dotB07"
+  top: "dotB08"
+  top: "dotB09"
+  top: "dotB10"
+  top: "dotB11"
+  top: "dotB12"
+  top: "dotB13"
+  top: "dotB14"
+  top: "dotB15"
+  top: "dotB16"
+  top: "dotB17"
+  top: "dotB18"
+  top: "dotB19"
+  top: "dotB20"
+  top: "dotB21"
+  top: "dotB22"
+  top: "dotB23"
+  top: "dotB24" 
+} 
+
+layer {
+  name: "patch"
+  top: "patch"
+  type: "Eltwise" 
+  eltwise_param {
+    operation: SUM
+  } 
+  bottom: "dotB01"
+  bottom: "dotB02"
+  bottom: "dotB03"
+  bottom: "dotB04"
+  bottom: "dotB05"
+  bottom: "dotB06"
+  bottom: "dotB07"
+  bottom: "dotB08"
+  bottom: "dotB09"
+  bottom: "dotB10"
+  bottom: "dotB11"
+  bottom: "dotB12"
+  bottom: "dotB13"
+  bottom: "dotB14"
+  bottom: "dotB15"
+  bottom: "dotB16"
+  bottom: "dotB17"
+  bottom: "dotB18"
+  bottom: "dotB19"
+  bottom: "dotB20"
+  bottom: "dotB21"
+  bottom: "dotB22"
+  bottom: "dotB23"
+  bottom: "dotB24" 
+} 
+
+###
+# Loss
+###
+
+layer {
+  name: "loss"
+  top: "loss"
+  type: "EuclideanLoss" 
+  bottom: "patch"
+  bottom: "patch_gt" 
+} 
+
